@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using System.Net;
 using System.Threading.Tasks;
 using Rests;
 using Terraria;
@@ -14,6 +15,7 @@ namespace VoteAlliance
   {
     private static readonly string TokenPath = Path.Combine(TShock.SavePath, "terraria-server-list-key.txt");
     private static string Token;
+    private const string TokenPlaceholder = "<Paste server key here>";
 
     public VoteAlliance(Main game) : base(game)
     {
@@ -40,7 +42,7 @@ namespace VoteAlliance
       catch (FileNotFoundException e)
       {
         using (var stream = File.CreateText(TokenPath))
-          stream.Write("<Paste server key here>");
+          stream.Write(TokenPlaceholder);
 
         TShock.Log.ConsoleError("TerrariaServerList API key not found on {0}, disabling plugin", e.FileName);
         token = null;
@@ -58,35 +60,48 @@ namespace VoteAlliance
 
     [Route("/votealliance/query")]
     [Noun("nickname", true, "Nickname of the user to query", typeof(string))]
-    private static async Task<object> QueryHandler(RestRequestArgs args)
+    private static object QueryHandler(RestRequestArgs args)
     {
-      if (string.IsNullOrWhiteSpace(Token))
+      if (string.IsNullOrWhiteSpace(Token) || Token == TokenPlaceholder)
+      {
+        args.Context.Response.Status = HttpStatusCode.InternalServerError;
         return new RestObject("500") {{"error", "The server administrator didn't configure the plugin correctly."}};
+      }
 
       using (var manager = new ServerManager(Token))
       {
         if (string.IsNullOrWhiteSpace(args.Parameters["nickname"]))
+        {
+          args.Context.Response.Status = HttpStatusCode.BadRequest;
           return new RestObject("400");
+        }
 
         bool? result;
 
         try
         {
-          result = await manager.CheckClaimedAsync(args.Parameters["nickname"]);
+          result = manager.CheckClaimedAsync(args.Parameters["nickname"]).Result;
         }
         catch (Exception e)
         {
           TShock.Log.ConsoleError("Error while serving VoteAlliance query:\n" + e);
+          args.Context.Response.Status = HttpStatusCode.InternalServerError;
           return new RestObject("500") {{"error", e.Message}};
         }
 
         if (result == null)
-          return new RestObject("404");
+        {
+          args.Context.Response.Status = HttpStatusCode.NotFound;
+          return new RestObject("404")
+          {
+            {"description", "This means the given nickname hasn't voted today, or there's a typo in the query."}
+          };
+        }
 
         return new RestObject
         {
           {"nickname", args.Parameters["nickname"]},
-          {"voted", result.Value ? "true" : "false"}
+          {"claimed", result.Value ? "true" : "false"}
         };
       }
     }
